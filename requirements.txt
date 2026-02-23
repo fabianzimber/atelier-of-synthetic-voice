@@ -1,0 +1,35 @@
+# Acoustic Atelier – Python 3.14 (Optimized for macOS)
+# Mac Apple Silicon (M-series) / MPS-optimized
+#
+# Install:
+#   python3.14 -m venv venv && source venv/bin/activate
+#   pip install -r requirements.txt
+#
+# NOTE: If Python 3.14 wheels are missing for your architecture, 
+# you can use Python 3.12 as a stable alternative.
+
+# ── TTS backend ──────────────────────────────────────────────────────────────
+qwen-tts>=0.1.1
+
+# ── PyTorch (Apple-MPS build – pre-installed via pip or conda) ──────────────
+# If not already installed:
+#   pip install torch torchvision torchaudio
+torch>=2.6.0
+torchaudio>=2.6.0
+
+# ── Audio I/O & processing ───────────────────────────────────────────────────
+soundfile>=0.13.0
+numpy>=1.26.0,<2.0.0   # keep <2 for MPS stability (confirmed working)
+scipy>=1.15.0
+torchcodec>=0.10.0
+
+# ── GUI ───────────────────────────────────────────────────────────────────────
+flet>=0.28.0
+
+# ── Transkription (Whisper) ───────────────────────────────────────────────────
+# Läuft auf CPU (MPS-Support in Whisper noch instabil)
+openai-whisper>=20240930
+
+# ── Data Miner ───────────────────────────────────────────────────────────────
+speechbrain>=1.0.3          # Speaker verification (ECAPA-TDNN)
+google-genai>=1.0.0         # Gemini API for emotion labelling (optional)

@@ -1,0 +1,87 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+wheels/
+
+# Test & coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Type checkers / linters
+.mypy_cache/
+.ruff_cache/
+
+# ── Project-specific ──────────────────────────────────────────────────────────
+# Generated voice profiles and audio exports
+voices/*
+!voices/.gitkeep
+!voices/app_settings.json.example
+
+# Mined audio clips output directory
+mined_clips/
+extracted_clips/
+output/
+
+# Media files (prevents accidental commits of large audio/video)
+*.wav
+*.mp3
+*.m4a
+*.mp4
+*.flac
+!assets/*.wav
+!assets/*.png
+!assets/*.jpeg
+
+# ── ML model caches (Local) ───────────────────────────────────────────────────
+# If models are downloaded into the project root
+models/
+checkpoints/
+.cache/
+
+# ── macOS ─────────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# ── Editors ───────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.cursor/
+.claude/
+.agent/
+
+# ── Environment / secrets ─────────────────────────────────────────────────────
+.env
+.env.*
+*.pem
+*.key
+secrets.json
+app_settings.json
+.python-version
+.opencode/
+.agent/

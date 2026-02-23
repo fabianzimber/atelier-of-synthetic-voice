@@ -1,0 +1,5 @@
+{
+  "whisper_model": "large-v3",
+  "auto_open_exports": false,
+  "gemini_api_key": ""
+}
