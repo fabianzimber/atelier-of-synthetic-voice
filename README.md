@@ -2,7 +2,8 @@
 
 ![Banner](assets/banner.jpeg)
 
-A professional desktop application for high-fidelity voice cloning and TTS synthesis, powered by **Qwen3-TTS-12Hz-1.7B-Base**. Exclusively designed and optimized for **macOS** and **Windows**, with native **Apple Silicon (MPS)** and **NVIDIA (CUDA)** acceleration.
+A professional desktop application for high-fidelity voice cloning and TTS synthesis, powered by **Qwen3-TTS-12Hz-1.7B-Base**.
+Designed and optimized for **macOS** and **Windows**, with native **Apple Silicon (MPS)** and **NVIDIA (CUDA)** acceleration.
 
 ## 🌟 Key Features
 
@@ -13,6 +14,14 @@ Create reusable high-fidelity voice profiles.
 - **Auto-Transcription:** Integrated **Whisper** support to automatically transcribe your reference audio.
 - **Profile Management:** Organize your voices with custom metadata, languages, and preview snippets.
 - **Multi-File Support:** Merge multiple short clips into a single, high-quality reference signature.
+
+### 🏋️ Training
+
+Finetune the Qwen3-TTS base model on your extracted voice clips to create a persistent custom voice.
+
+- **Data Preparation:** Tokenizes audio clips into `audio_codes` for training.
+- **MPS-Optimized Training Loop:** Gradient checkpointing and mixed-precision for Apple Silicon.
+- **Checkpoint Management:** Automatically retains the two most recent checkpoints (~3.4 GB each).
 
 ### 🎭 Speech Studio
 
@@ -87,21 +96,23 @@ voice-clone/
 ├── core/
 │   ├── engine.py         # TTS Engine (MPS/CUDA Optimized)
 │   ├── profiles.py       # Voice Profile CRUD & Storage
-│   ├── extractor.py      # AI-Powered Audio Mining Pipeline
-│   └── extractor.py      # Speaker Identification & VAD
+│   ├── extractor.py      # AI-Powered Audio Mining Pipeline & VAD
+│   ├── tokenizer.py      # Audio Tokenizer (Qwen3TTS 12Hz)
+│   ├── dataset.py        # TTS Dataset & collate_fn for finetuning
+│   └── trainer.py        # Voice Trainer (MPS-compatible training loop)
 ├── ui/
-│   └── flet_app.py       # Modern, scrollable Flet UI
-└── voices/               # Local database (Profiles, Settings, Exports)
+│   └── flet_app.py       # Modern, scrollable Flet UI (4 tabs)
+└── voices/               # Local database (Profiles, Checkpoints, Exports)
 ```
 
 ## 🚄 Performance Optimization
 
-| Feature                  | Backend                    | Optimized For                     |
-| ------------------------ | -------------------------- | --------------------------------- |
-| **TTS Generation**       | `torch.mps` / `torch.cuda` | Instant inference via Metal/CUDA  |
-| **Speaker Verification** | `ECAPA-TDNN`               | High-precision voice matching     |
-| **Audio Processing**     | `soundfile` / `scipy`      | 16/22kHz high-fidelity throughput |
-| **Memory**               | `bfloat16`                 | Optimized 1.7B model footprint    |
+| Feature                  | Backend                             | Optimized For                     |
+| ------------------------ | ----------------------------------- | --------------------------------- |
+| **TTS Generation**       | `torch.mps` / `torch.cuda`          | Instant inference via Metal/CUDA  |
+| **Speaker Verification** | `ECAPA-TDNN`                        | High-precision voice matching     |
+| **Audio Processing**     | `soundfile` / `scipy`               | 16/22kHz high-fidelity throughput |
+| **Memory**               | `float32` (MPS) / `bfloat16` (CUDA) | Stable 1.7B model footprint       |
 
 ## ⚖️ License
 
