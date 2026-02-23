@@ -40,8 +40,12 @@ class ExtractedClip:
     path: str
     transcript: str
     emotion: str
-    clarity_score: int
+    clarity_score: int       # Weighted composite (1–10)
     duration: float
+    speaker_similarity: float = 0.0
+    audio_quality: int = 0   # Sub-score: recording quality (1–10)
+    expressiveness: int = 0  # Sub-score: emotional dynamics (1–10)
+    speech_clarity: int = 0  # Sub-score: articulation / intelligibility (1–10)
 
 
 class AudioExtractor:
@@ -159,8 +163,8 @@ class AudioExtractor:
                 end = ts["end"]
                 duration = (end - start) / 16000.0
 
-                # Skip very short or very long clips
-                if duration < 2.0 or duration > 60.0:
+                # Skip very short or very long clips (optimal for zero-shot cloning: 5–25 s)
+                if duration < 5.0 or duration > 25.0:
                     stats["processed"] += 1
                     stats_cb(stats)
                     continue
@@ -194,15 +198,36 @@ class AudioExtractor:
                         )
                         try:
                             prompt = (
-                                "Listen to this audio clip. "
-                                "1. Transcribe the spoken text exactly. "
-                                "2. Rate the audio quality and emotional expressiveness from 1 to 10. "
-                                "BE CRITICAL: 10 is perfect studio quality with very clear, distinct strong emotion. "
-                                "8 is high quality but might have slight noise or very subtle/neutral emotion. "
-                                "Only give 9 or 10 for exceptionally clear clips where the emotion is vivid and unmistakable. "
-                                "Neutral speech should be rated strictly lower unless it is perfectly clean. "
-                                "3. Classify the emotion (e.g. 'neutral', 'angry', 'happy', 'sad', 'excited', 'whispering'). "
-                                "Return ONLY a valid JSON object with keys 'transcript', 'clarity_score' (int), and 'emotion' (string)."
+                                "You are a strict audio quality auditor for voice cloning. "
+                                "Evaluate this clip on THREE independent dimensions, each scored 1–10:\n\n"
+                                "audio_quality — Recording technical quality:\n"
+                                "  10: Studio silence, zero noise floor, pristine\n"
+                                "   8: Very clean, barely perceptible room tone\n"
+                                "   6: Noticeable hiss, mild background sound, light compression\n"
+                                "   4: Significant noise, music bed, or competing voices audible\n"
+                                "   2: Heavy distortion, clipping, or near-unintelligible noise\n\n"
+                                "voice_expressiveness — Emotional range and prosody dynamics:\n"
+                                "  10: Vivid unmistakable emotion dominating the clip, strong pitch/rhythm dynamics\n"
+                                "   8: Clear emotional coloring, natural prosody variation\n"
+                                "   6: Some inflection, but mostly flat; serviceable but unremarkable\n"
+                                "   4: Monotone throughout, robotic or completely neutral pacing\n"
+                                "   2: No discernible expressiveness whatsoever\n\n"
+                                "speech_clarity — Intelligibility and articulation:\n"
+                                "  10: Every word perfectly crisp, ideal for forced-alignment transcription\n"
+                                "   8: Very clear, minor articulation inconsistencies\n"
+                                "   6: Mostly understandable, occasional mumbling or fast-speech drops\n"
+                                "   4: Frequently hard to follow, many unclear phonemes\n"
+                                "   2: Largely unintelligible\n\n"
+                                "IMPORTANT: Use the FULL scale. Most clips should score 5–8. "
+                                "Only exceptional clips reach 9–10. Be strict and differentiate clearly. "
+                                "Do NOT default everything to 8.\n\n"
+                                "Also:\n"
+                                "1. Transcribe the spoken text exactly.\n"
+                                "2. Classify the dominant emotion/style "
+                                "(e.g. 'neutral', 'angry', 'happy', 'sad', 'excited', 'whispering', 'narrative', 'dramatic').\n\n"
+                                "Return ONLY valid JSON with keys: "
+                                "'transcript' (string), 'audio_quality' (int), "
+                                "'voice_expressiveness' (int), 'speech_clarity' (int), 'emotion' (string)."
                             )
 
                             myfile = await asyncio.to_thread(
@@ -210,7 +235,7 @@ class AudioExtractor:
                             )
                             response = await asyncio.to_thread(
                                 self.client.models.generate_content,
-                                model="gemini-2.5-flash",
+                                model="gemini-3-flash-preview",
                                 contents=[myfile, prompt],
                                 config=types.GenerateContentConfig(
                                     response_mime_type="application/json"
@@ -218,7 +243,11 @@ class AudioExtractor:
                             )
 
                             data = json.loads(response.text)
-                            clarity = int(data.get("clarity_score", 0))
+                            # Weighted composite: expressiveness 40%, audio quality 35%, clarity 25%
+                            aq = int(data.get("audio_quality", 5))
+                            ve = int(data.get("voice_expressiveness", 5))
+                            sc = int(data.get("speech_clarity", 5))
+                            clarity = round(aq * 0.35 + ve * 0.40 + sc * 0.25)
 
                             if clarity >= 8:
                                 emotion_clean = (
@@ -238,6 +267,10 @@ class AudioExtractor:
                                     emotion=data.get("emotion", "unknown"),
                                     clarity_score=clarity,
                                     duration=duration,
+                                    speaker_similarity=similarity,
+                                    audio_quality=aq,
+                                    expressiveness=ve,
+                                    speech_clarity=sc,
                                 )
                             else:
                                 stats["rejected_quality"] += 1
@@ -256,6 +289,7 @@ class AudioExtractor:
                                 emotion="unclassified_api_error",
                                 clarity_score=0,
                                 duration=duration,
+                                speaker_similarity=similarity,
                             )
 
                     if not self.client:
@@ -268,6 +302,7 @@ class AudioExtractor:
                             emotion="unclassified",
                             clarity_score=0,
                             duration=duration,
+                            speaker_similarity=similarity,
                         )
 
                     stats["processed"] += 1
@@ -291,6 +326,76 @@ class AudioExtractor:
                 if not self.is_cancelled
                 else "Extraction cancelled."
             )
+
+    @staticmethod
+    def build_optimal_reference(
+        clips: list[ExtractedClip],
+        target_dir: Path,
+        target_duration: float = 28.0,
+        silence_gap: float = 0.3,
+    ) -> tuple[Path, str] | None:
+        """Build an optimal voice cloning reference audio from extracted clips.
+
+        Selects and concatenates clips (sorted by clarity_score * speaker_similarity)
+        until target_duration is reached (~28 s for maximum emotional variety).
+        A single clip >= 25 s with score >= 8 is used directly without merging.
+
+        Returns (wav_path, combined_transcript) or None if no clips available.
+        """
+        if not clips:
+            return None
+
+        # Sort by composite score descending
+        scored = sorted(
+            clips,
+            key=lambda c: c.clarity_score * c.speaker_similarity,
+            reverse=True,
+        )
+
+        # Only skip accumulation if a single clip is already near the 30 s target
+        for c in scored:
+            if c.duration >= 25.0 and c.clarity_score >= 8:
+                return Path(c.path), c.transcript
+
+        # Otherwise accumulate clips until target_duration
+        selected: list[ExtractedClip] = []
+        accumulated = 0.0
+        for c in scored:
+            if accumulated >= target_duration:
+                break
+            selected.append(c)
+            accumulated += c.duration + silence_gap
+
+        if not selected:
+            return None
+
+        if len(selected) == 1:
+            return Path(selected[0].path), selected[0].transcript
+
+        # Load and concatenate audio segments
+        segments: list[np.ndarray] = []
+        sr: int = 24000
+        silence = np.zeros(int(sr * silence_gap), dtype=np.float32)
+
+        for clip in selected:
+            audio, clip_sr = sf.read(clip.path, dtype="float32")
+            if audio.ndim > 1:
+                audio = audio.mean(axis=1)
+            if clip_sr != sr:
+                import resampy
+                audio = resampy.resample(audio, clip_sr, sr)
+            segments.append(audio)
+            segments.append(silence)
+
+        combined = np.concatenate(segments[:-1])  # Drop trailing silence
+        combined_transcript = " ".join(c.transcript for c in selected if c.transcript)
+
+        target_dir = Path(target_dir)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        out_path = target_dir / "optimal_reference.wav"
+        sf.write(str(out_path), combined, sr)
+
+        return out_path, combined_transcript
 
     @staticmethod
     def filter_top_per_emotion(

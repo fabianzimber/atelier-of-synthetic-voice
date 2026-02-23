@@ -105,6 +105,24 @@ class TTSEngine:
                 dtype=torch.bfloat16,
                 attn_implementation="sdpa",
             )
+            # Speech-Tokenizer landet auf CPU weil from_pretrained()
+            # den device_map aus kwargs poppt bevor der Tokenizer geladen wird.
+            st = self._clone_model.model.speech_tokenizer
+            if st is not None and str(st.device) != self._device:
+                if progress_cb:
+                    progress_cb("Verschiebe Speech-Tokenizer auf MPS…")
+                st.model = st.model.to(self._device)
+                st.device = torch.device(self._device)
+
+            # torch.compile für ~3x Speedup auf MPS
+            if progress_cb:
+                progress_cb("Optimiere Modell mit torch.compile…")
+            talker = self._clone_model.model.talker
+            talker.model = torch.compile(talker.model, backend="aot_eager")
+            talker.code_predictor.model = torch.compile(
+                talker.code_predictor.model, backend="aot_eager"
+            )
+
             if progress_cb:
                 progress_cb("Voice-Clone-Modell bereit.")
         return self._clone_model
@@ -117,10 +135,10 @@ class TTSEngine:
         ref_audio: Union[str, tuple[np.ndarray, int]],
         ref_text: str,
         progress_cb: Optional[Callable[[str], None]] = None,
-        max_new_tokens: int = 4092,
-        temperature: float = 1.8,
+        max_new_tokens: int = 256,
+        temperature: float = 0.9,
         repetition_penalty: float = 1.05,
-        subtalker_temperature: float = 1.8,
+        subtalker_temperature: float = 0.9,
     ) -> tuple[list[np.ndarray], int]:
         """Generiert Sprache durch direkte Referenz-Audio-Übergabe."""
         model = self.load_clone_model(progress_cb)
@@ -136,66 +154,12 @@ class TTSEngine:
             do_sample=True,
             top_k=50,
             top_p=1.0,
-            temperature=1.6, #temperature,
-            repetition_penalty=1.1, #epetition_penalty,
+            temperature=temperature,
+            repetition_penalty=repetition_penalty,
             subtalker_dosample=True,
             subtalker_top_k=50,
             subtalker_top_p=1.0,
-            subtalker_temperature=1.6, #subtalker_temperature,
-        )
-        self._sync_device()
-        return wavs, sr
-
-    def create_voice_clone_prompt(
-        self,
-        ref_audio: Union[str, tuple[np.ndarray, int]],
-        ref_text: str,
-        progress_cb: Optional[Callable[[str], None]] = None,
-    ) -> object:
-        """
-        Erstellt ein wiederverwendbares Voice-Clone-Prompt-Objekt.
-        Effizient für mehrfache Generierung mit derselben Stimme.
-        """
-        model = self.load_clone_model(progress_cb)
-        if progress_cb:
-            progress_cb("Erstelle Voice-Clone-Prompt…")
-        prompt = model.create_voice_clone_prompt(
-            ref_audio=ref_audio,
-            ref_text=ref_text,
-            x_vector_only_mode=False,
-        )
-        self._sync_device()
-        return prompt
-
-    def generate_with_prompt(
-        self,
-        text: Union[str, list[str]],
-        language: Union[str, list[str]],
-        voice_clone_prompt: object,
-        progress_cb: Optional[Callable[[str], None]] = None,
-        max_new_tokens: int = 4092,
-        temperature: float = 1.8,
-        repetition_penalty: float = 1.05,
-        subtalker_temperature: float = 1.8,
-    ) -> tuple[list[np.ndarray], int]:
-        """Generiert Sprache mit einem gespeicherten Voice-Clone-Prompt."""
-        model = self.load_clone_model(progress_cb)
-        if progress_cb:
-            progress_cb("Generiere mit gespeichertem Stimmenprofil…")
-        wavs, sr = model.generate_voice_clone(
-            text=text,
-            language=language,
-            voice_clone_prompt=voice_clone_prompt,
-            max_new_tokens=max_new_tokens,
-            do_sample=True,
-            top_k=50,
-            top_p=1.0,
-            temperature=1.6, #temperature,
-            repetition_penalty=1.1, #repetition_penalty,
-            subtalker_dosample=True,
-            subtalker_top_k=50,
-            subtalker_top_p=1.0,
-            subtalker_temperature=1.6, #subtalker_temperature,
+            subtalker_temperature=subtalker_temperature,
         )
         self._sync_device()
         return wavs, sr

@@ -56,10 +56,10 @@ class StudioSettings:
     whisper_model: str = "large-v3"
     auto_open_exports: bool = False
     gemini_api_key: str = ""
-    max_token_size: int = 4092
-    temperature: float = 1.8
+    max_token_size: int = 2048
+    temperature: float = 0.9
     repetition_penalty: float = 1.05
-    subtalker_temperature: float = 1.8
+    subtalker_temperature: float = 0.9
 
 
 def _settings_path() -> Path:
@@ -76,10 +76,10 @@ def _load_settings() -> StudioSettings:
             whisper_model=data.get("whisper_model", "large-v3"),
             auto_open_exports=bool(data.get("auto_open_exports", False)),
             gemini_api_key=data.get("gemini_api_key", ""),
-            max_token_size=int(data.get("max_token_size", 4092)),
-            temperature=float(data.get("temperature", 1.8)),
+            max_token_size=int(data.get("max_token_size", 2048)),
+            temperature=float(data.get("temperature", 0.9)),
             repetition_penalty=float(data.get("repetition_penalty", 1.05)),
-            subtalker_temperature=float(data.get("subtalker_temperature", 1.8)),
+            subtalker_temperature=float(data.get("subtalker_temperature", 0.9)),
         )
     except Exception:
         return StudioSettings()
@@ -666,6 +666,16 @@ class VoiceCloneStudioApp:
             self.page.update()
 
     def _build_clip_row(self, clip) -> ft.Container:
+        dur = clip.duration
+        if dur >= 15.0:
+            badge_bg, badge_fg, range_label = "#DCFCE7", "#065F46", "Optimal"
+        elif dur >= 8.0:
+            badge_bg, badge_fg, range_label = "#FEF3C7", "#78350F", "OK"
+        else:
+            badge_bg, badge_fg, range_label = "#FEE2E2", "#991B1B", "Short"
+
+        similarity_pct = int(clip.speaker_similarity * 100) if clip.speaker_similarity > 0 else 0
+
         return ft.Container(
             padding=10,
             border_radius=10,
@@ -682,10 +692,46 @@ class VoiceCloneStudioApp:
                     ),
                     ft.Column(
                         [
-                            ft.Text(
-                                f"Emotion: {clip.emotion} (Score: {clip.clarity_score}/10)",
-                                weight=ft.FontWeight.W_600,
-                                size=12,
+                            ft.Row(
+                                [
+                                    ft.Text(
+                                        f"{clip.emotion}  ·  {clip.clarity_score}/10",
+                                        weight=ft.FontWeight.W_600,
+                                        size=12,
+                                    ),
+                                    ft.Container(
+                                        content=ft.Text(
+                                            f"{dur:.1f}s · {range_label}",
+                                            size=10,
+                                            color=badge_fg,
+                                        ),
+                                        padding=ft.padding.symmetric(horizontal=6, vertical=2),
+                                        border_radius=6,
+                                        bgcolor=badge_bg,
+                                    ),
+                                    ft.Container(
+                                        content=ft.Text(
+                                            f"Sim: {similarity_pct}%",
+                                            size=10,
+                                            color="#475569",
+                                        ),
+                                        padding=ft.padding.symmetric(horizontal=6, vertical=2),
+                                        border_radius=6,
+                                        bgcolor="#F1F5F9",
+                                    ),
+                                ],
+                                spacing=6,
+                            ),
+                            # Sub-score detail row (only shown when Gemini scored the clip)
+                            ft.Row(
+                                [
+                                    ft.Text(
+                                        f"Q:{clip.audio_quality}  E:{clip.expressiveness}  C:{clip.speech_clarity}",
+                                        size=10,
+                                        color="#94A3B8",
+                                    ),
+                                ],
+                                visible=clip.audio_quality > 0,
                             ),
                             ft.Text(
                                 f'"{clip.transcript}"',
@@ -747,6 +793,46 @@ class VoiceCloneStudioApp:
             self.merge_progress.visible = False
             self.page.update()
 
+    async def _build_optimal_reference_from_clips(self) -> None:
+        if not self.miner_extracted_clips:
+            self._toast("No extracted clips available. Run the Audio Extractor first.", error=True)
+            return
+
+        self.merge_progress.visible = True
+        self.ref_status.value = "Building optimal reference..."
+        self.page.update()
+
+        try:
+            output_dir = Path(__file__).resolve().parent.parent / "extracted_clips"
+            result = await asyncio.to_thread(
+                AudioExtractor.build_optimal_reference,
+                self.miner_extracted_clips,
+                output_dir,
+            )
+            if result is None:
+                self._toast("Could not build reference: no suitable clips.", error=True)
+                return
+
+            out_path, combined_transcript = result
+            self.reference_files = [out_path]
+            merged, sr, duration = await asyncio.to_thread(
+                _merge_reference_files, [out_path]
+            )
+            self.reference_audio, self.reference_sr, self.reference_duration = (
+                merged, sr, duration,
+            )
+            self.ref_files_list.controls = [
+                ft.Text(f"• {out_path.name}", size=12)
+            ]
+            self.ref_text_input.value = combined_transcript
+            self.ref_status.value = f"Optimal reference ready: {duration:.1f}s."
+            self._toast(f"Built optimal reference ({duration:.1f}s).")
+        except Exception as e:
+            self._toast(f"Build failed: {e}", error=True)
+        finally:
+            self.merge_progress.visible = False
+            self.page.update()
+
     def _build_voice_lab(self) -> ft.Control:
         self.ref_status = ft.Text(
             "No reference media selected.", size=12, color="#64748B"
@@ -795,6 +881,19 @@ class VoiceCloneStudioApp:
                         ),
                         self.merge_progress,
                     ]
+                ),
+                ft.ElevatedButton(
+                    "Build Optimal Reference",
+                    icon=ft.Icons.AUTO_FIX_HIGH,
+                    on_click=lambda e: asyncio.create_task(
+                        self._build_optimal_reference_from_clips()
+                    ),
+                    tooltip="Auto-compose the best ~28s reference from extracted clips for maximum emotional variety",
+                    style=ft.ButtonStyle(
+                        bgcolor="#0A84FF",
+                        color="#FFFFFF",
+                        shape=ft.RoundedRectangleBorder(radius=12),
+                    ),
                 ),
                 self.ref_status,
                 ft.Container(
@@ -1105,24 +1204,24 @@ class VoiceCloneStudioApp:
 
         self.temp_slider = ft.Slider(
             min=0.1,
-            max=2.5,
-            divisions=24,
+            max=2.0,
+            divisions=19,
             label="{value}",
             value=self.settings.temperature,
             on_change=self._save_numeric_settings,
         )
         self.rep_penalty_slider = ft.Slider(
             min=1.0,
-            max=2.0,
-            divisions=20,
+            max=1.5,
+            divisions=10,
             label="{value}",
             value=self.settings.repetition_penalty,
             on_change=self._save_numeric_settings,
         )
         self.sub_temp_slider = ft.Slider(
             min=0.1,
-            max=2.5,
-            divisions=24,
+            max=2.0,
+            divisions=19,
             label="{value}",
             value=self.settings.subtalker_temperature,
             on_change=self._save_numeric_settings,
