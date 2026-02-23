@@ -1,8 +1,10 @@
 """
 core/engine.py – TTS-Engine (Singleton)
 
-Verwaltet das Qwen3-TTS-Voice-Clone-Modell:
-  • Qwen3-TTS-12Hz-1.7B-Base → Voice-Cloning via Referenz-Audio
+Verwaltet das Qwen3-TTS-Modell für Inferenz:
+  • load_base_model()       → Base-Modell laden (für Training)
+  • load_finetuned_model()  → Finetuned CustomVoice-Checkpoint laden
+  • generate_custom_voice() → Sprache generieren mit trainierter Stimme
 
 Apple-Silicon / MPS-Hinweise
 -----------------------------
@@ -24,7 +26,7 @@ warnings.filterwarnings("ignore", message=".*flash.attn.*")
 warnings.filterwarnings("ignore", message=".*FlashAttention.*")
 
 # ── Modell-Identifikation ────────────────────────────────────────────────────
-CLONE_MODEL_ID = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+BASE_MODEL_ID = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
 
 # ── Unterstützte Sprachen ────────────────────────────────────────────────────
 SUPPORTED_LANGUAGES: list[str] = [
@@ -51,7 +53,11 @@ def _detect_device() -> str:
 
 
 class TTSEngine:
-    """Thread-sicherer Singleton, der beide TTS-Modelle verwaltet."""
+    """Thread-sicherer Singleton für TTS-Inferenz.
+
+    Unterstützt Model-Switching: Es kann immer nur ein Modell gleichzeitig
+    geladen sein (Speicherbeschränkung auf 24 GB M4).
+    """
 
     _instance: Optional["TTSEngine"] = None
     _creation_lock: Lock = Lock()
@@ -68,9 +74,10 @@ class TTSEngine:
     def __init__(self) -> None:
         if self._initialized:
             return
-        self._clone_model = None
+        self._model = None
         self._model_lock = Lock()
         self._device = _detect_device()
+        self._current_checkpoint: Optional[str] = None
         self._initialized = True
 
     # ── Eigenschaften ──────────────────────────────────────────────────────
@@ -84,105 +91,118 @@ class TTSEngine:
         return labels.get(self._device, self._device)
 
     @property
-    def clone_model_loaded(self) -> bool:
-        return self._clone_model is not None
+    def model_loaded(self) -> bool:
+        return self._model is not None
 
-    # ── Modell laden ───────────────────────────────────────────────────────
-    def load_clone_model(
+    @property
+    def current_checkpoint(self) -> Optional[str]:
+        return self._current_checkpoint
+
+    # ── Base-Modell laden (für Training) ──────────────────────────────────
+    def load_base_model(
         self, progress_cb: Optional[Callable[[str], None]] = None
     ) -> object:
+        """Lädt das Base-Modell (Qwen3-TTS-12Hz-1.7B-Base). Für Training-Zwecke."""
         with self._model_lock:
-            if self._clone_model is not None:
-                return self._clone_model
+            if self._model is not None and self._current_checkpoint == BASE_MODEL_ID:
+                return self._model
+            self.unload_model()
             if progress_cb:
-                progress_cb("Lade Voice-Clone-Modell (1.7B)…")
+                progress_cb("Lade Base-Modell (1.7B)…")
 
             from qwen_tts import Qwen3TTSModel  # type: ignore[import]
 
-            self._clone_model = Qwen3TTSModel.from_pretrained(
-                CLONE_MODEL_ID, device_map={"": self._device}, dtype=torch.bfloat16
+            self._model = Qwen3TTSModel.from_pretrained(
+                BASE_MODEL_ID,
+                device_map={"": self._device},
+                dtype=torch.float32,
+                attn_implementation="sdpa",
             )
+            self._current_checkpoint = BASE_MODEL_ID
             if progress_cb:
-                progress_cb("Voice-Clone-Modell bereit.")
-        return self._clone_model
+                progress_cb("Base-Modell bereit.")
+        return self._model
 
-    # ── Inferenz: Voice Cloning ────────────────────────────────────────────
-    def generate_with_clone(
+    # ── Finetuned-Modell laden ────────────────────────────────────────────
+    def load_finetuned_model(
         self,
-        text: Union[str, list[str]],
-        language: Union[str, list[str]],
-        ref_audio: Union[str, tuple[np.ndarray, int]],
-        ref_text: str,
-        progress_cb: Optional[Callable[[str], None]] = None,
-        max_new_tokens: int = 4092,
-        temperature: float = 1.8,
-        repetition_penalty: float = 1.05,
-        subtalker_temperature: float = 1.8,
-    ) -> tuple[list[np.ndarray], int]:
-        """Generiert Sprache durch direkte Referenz-Audio-Übergabe."""
-        model = self.load_clone_model(progress_cb)
-        if progress_cb:
-            progress_cb("Generiere Sprache mit geklonter Stimme…")
-
-        wavs, sr = model.generate_voice_clone(
-            text=text,
-            language=language,
-            ref_audio=ref_audio,
-            ref_text=ref_text,
-            max_new_tokens=max_new_tokens,
-            do_sample=True,
-            top_k=50,
-            top_p=1.0,
-            temperature=temperature,
-            repetition_penalty=repetition_penalty,
-            subtalker_dosample=True,
-            subtalker_top_k=50,
-            subtalker_top_p=1.0,
-            subtalker_temperature=subtalker_temperature,
-        )
-        self._sync_device()
-        return wavs, sr
-
-    def create_voice_clone_prompt(
-        self,
-        ref_audio: Union[str, tuple[np.ndarray, int]],
-        ref_text: str,
+        checkpoint_path: str,
         progress_cb: Optional[Callable[[str], None]] = None,
     ) -> object:
-        """
-        Erstellt ein wiederverwendbares Voice-Clone-Prompt-Objekt.
-        Effizient für mehrfache Generierung mit derselben Stimme.
-        """
-        model = self.load_clone_model(progress_cb)
-        if progress_cb:
-            progress_cb("Erstelle Voice-Clone-Prompt…")
-        prompt = model.create_voice_clone_prompt(
-            ref_audio=ref_audio,
-            ref_text=ref_text,
-            x_vector_only_mode=False,
-        )
-        self._sync_device()
-        return prompt
+        """Lädt einen Finetuned CustomVoice-Checkpoint.
 
-    def generate_with_prompt(
+        Entlädt zuerst das aktuelle Modell, da zwei Modelle nicht
+        gleichzeitig in 24 GB Speicher passen.
+        """
+        with self._model_lock:
+            if self._current_checkpoint == checkpoint_path and self._model is not None:
+                return self._model
+            self.unload_model()
+            if progress_cb:
+                progress_cb("Lade finetuned Modell…")
+
+            from qwen_tts import Qwen3TTSModel  # type: ignore[import]
+
+            self._model = Qwen3TTSModel.from_pretrained(
+                checkpoint_path,
+                device_map={"": self._device},
+                dtype=torch.float32,
+                attn_implementation="sdpa",
+            )
+            self._current_checkpoint = checkpoint_path
+            if progress_cb:
+                progress_cb("Finetuned Modell bereit.")
+        return self._model
+
+    # ── Modell entladen ───────────────────────────────────────────────────
+    def unload_model(self) -> None:
+        """Modell entladen und Speicher freigeben."""
+        if self._model is not None:
+            del self._model
+            self._model = None
+            self._current_checkpoint = None
+            if self._device == "mps":
+                torch.mps.empty_cache()
+            elif self._device == "cuda":
+                torch.cuda.empty_cache()
+
+    # ── Inferenz: CustomVoice ─────────────────────────────────────────────
+    def generate_custom_voice(
         self,
         text: Union[str, list[str]],
-        language: Union[str, list[str]],
-        voice_clone_prompt: object,
+        speaker_name: str,
+        language: Union[str, list[str]] = "Auto",
+        instruct: Optional[str] = None,
         progress_cb: Optional[Callable[[str], None]] = None,
         max_new_tokens: int = 4092,
         temperature: float = 1.8,
         repetition_penalty: float = 1.05,
         subtalker_temperature: float = 1.8,
     ) -> tuple[list[np.ndarray], int]:
-        """Generiert Sprache mit einem gespeicherten Voice-Clone-Prompt."""
-        model = self.load_clone_model(progress_cb)
+        """Generiert Sprache mit einem Finetuned CustomVoice-Modell.
+
+        Args:
+            text: Text(e) zum Vorlesen.
+            speaker_name: Speaker-Name (wie im Training definiert).
+            language: Sprache (Auto, German, English, ...).
+            instruct: Optionale Emotions-/Stil-Anweisung (nur 1.7B).
+            progress_cb: Fortschritts-Callback.
+            max_new_tokens: Maximale Token-Anzahl.
+            temperature: Sampling-Temperatur.
+            repetition_penalty: Wiederholungs-Penalty.
+            subtalker_temperature: Sub-Talker-Temperatur.
+        """
+        if self._model is None:
+            raise RuntimeError("Kein Modell geladen. Lade zuerst einen Checkpoint.")
+
         if progress_cb:
-            progress_cb("Generiere mit gespeichertem Stimmenprofil…")
-        wavs, sr = model.generate_voice_clone(
+            progress_cb("Generiere Sprache mit CustomVoice…")
+
+        wavs, sr = self._model.generate_custom_voice(
             text=text,
+            speaker=speaker_name,
             language=language,
-            voice_clone_prompt=voice_clone_prompt,
+            instruct=instruct,
             max_new_tokens=max_new_tokens,
             do_sample=True,
             top_k=50,

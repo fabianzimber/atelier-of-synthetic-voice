@@ -1,3 +1,13 @@
+"""
+core/extractor.py – Audio-Extraktor für Finetuning-Daten
+
+Extrahiert passende Sprach-Clips aus langen Medien-Dateien:
+  1. VAD (Silero) segmentiert in Sprachbereiche
+  2. Speaker-Verifikation (SpeechBrain ECAPA-TDNN) filtert auf Ziel-Stimme
+  3. Gemini API (optional) bewertet Emotion + Qualität
+  4. Whisper-Fallback für Transkription wenn kein Gemini
+"""
+
 import asyncio
 import json
 import os
@@ -33,6 +43,7 @@ class ExtractedClip:
     emotion: str
     clarity_score: int
     duration: float
+    similarity_score: float = 0.0
 
 
 class AudioExtractor:
@@ -42,17 +53,20 @@ class AudioExtractor:
         source_media_path: str,
         output_dir: str,
         gemini_api_key: Optional[str] = None,
+        whisper_model_name: str = "large-v3",
     ):
         self.target_audio_path = Path(target_audio_path)
         self.source_media_path = Path(source_media_path)
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.gemini_api_key = gemini_api_key
+        self.whisper_model_name = whisper_model_name
 
         self.vad_model = None
         self.get_speech_timestamps = None
         self.speaker_model = None
         self.client = None
+        self.whisper_model = None
         self.is_cancelled = False
 
     def cancel(self):
@@ -66,7 +80,6 @@ class AudioExtractor:
         self.get_speech_timestamps = utils[0]
 
         status_cb("Loading SpeechBrain (Speaker Verification)...")
-        # Ensure we have a cache dir
         cache_dir = Path.home() / ".cache" / "voice_clone_extractor"
         cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -80,9 +93,24 @@ class AudioExtractor:
             status_cb("Initializing Gemini 2.5 API...")
             self.client = genai.Client(api_key=self.gemini_api_key)
 
-    def _extract_audio(self, status_cb: Callable[[str], None]) -> Path:
-        status_cb("Extracting audio from media (16kHz, mono)...")
-        # Use a unique temporary file to avoid collisions between multiple runs
+    def _load_whisper(self, status_cb: Callable[[str], None]):
+        """Whisper-Modell lazy laden (nur wenn gebraucht)."""
+        if self.whisper_model is not None:
+            return
+        status_cb(f"Loading Whisper ({self.whisper_model_name}) for transcription...")
+        import whisper
+        self.whisper_model = whisper.load_model(self.whisper_model_name, device="cpu")
+
+    def _transcribe_clip(self, clip_path: str) -> str:
+        """Transkribiert einen einzelnen Clip mit Whisper."""
+        if self.whisper_model is None:
+            return ""
+        import whisper
+        result = whisper.transcribe(self.whisper_model, clip_path, fp16=False)
+        return result.get("text", "").strip()
+
+    def _extract_audio(self, status_cb: Callable[[str], None], sample_rate: int = 16000) -> Path:
+        status_cb(f"Extracting audio from media ({sample_rate // 1000}kHz, mono)...")
         fd, path_str = tempfile.mkstemp(suffix="_source.wav")
         os.close(fd)
         tmp_wav = Path(path_str)
@@ -93,7 +121,7 @@ class AudioExtractor:
             "-i",
             str(self.source_media_path),
             "-ar",
-            "16000",
+            str(sample_rate),
             "-ac",
             "1",
             "-c:a",
@@ -112,7 +140,14 @@ class AudioExtractor:
     ) -> AsyncGenerator[ExtractedClip, None]:
         await asyncio.to_thread(self._load_models, status_cb)
 
-        tmp_wav = await asyncio.to_thread(self._extract_audio, status_cb)
+        # Whisper laden wenn kein Gemini konfiguriert
+        if not self.client:
+            await asyncio.to_thread(self._load_whisper, status_cb)
+
+        # 16 kHz für VAD + Speaker-Matching (Silero/SpeechBrain optimiert für 16 kHz)
+        tmp_wav_16k = await asyncio.to_thread(self._extract_audio, status_cb, 16000)
+        # 24 kHz für Training-Clips (Pflicht für Qwen3-TTS extract_mels)
+        tmp_wav_24k = await asyncio.to_thread(self._extract_audio, status_cb, 24000)
 
         try:
             status_cb("Analyzing target voice signature...")
@@ -122,8 +157,9 @@ class AudioExtractor:
 
             status_cb("Extraction in progress. Searching for perfect clips...")
 
-            wav, sr = await asyncio.to_thread(sf.read, str(tmp_wav), dtype="float32")
-            wav_tensor = torch.from_numpy(wav)
+            wav_16k, _ = await asyncio.to_thread(sf.read, str(tmp_wav_16k), dtype="float32")
+            wav_24k, _ = await asyncio.to_thread(sf.read, str(tmp_wav_24k), dtype="float32")
+            wav_tensor = torch.from_numpy(wav_16k)
 
             status_cb("Running Voice Activity Detection...")
             speech_timestamps = await asyncio.to_thread(
@@ -150,15 +186,15 @@ class AudioExtractor:
                 end = ts["end"]
                 duration = (end - start) / 16000.0
 
-                # Skip very short or very long clips
-                if duration < 2.0 or duration > 60.0:
+                # 3-30s: Ideal für TTS-Finetuning (12Hz → max ~360 Codec-Tokens)
+                if duration < 3.0 or duration > 30.0:
                     stats["processed"] += 1
                     stats_cb(stats)
                     continue
 
                 chunk_tensor = wav_tensor[start:end].unsqueeze(0)
 
-                # Speaker Verification
+                # Speaker Verification (16 kHz)
                 score, _ = await asyncio.to_thread(
                     self.speaker_model.verify_batch, target_sig, chunk_tensor
                 )
@@ -170,13 +206,15 @@ class AudioExtractor:
                     stats_cb(stats)
                     continue
 
-                # It's our speaker! Save a temp file to send to Gemini
-                chunk_np = wav_tensor[start:end].numpy()
+                # Clip aus der 24-kHz-Quelle extrahieren (für Training)
+                start_24k = int(start * 24000 / 16000)
+                end_24k = int(end * 24000 / 16000)
+                chunk_np = wav_24k[start_24k:end_24k]
                 fd, tmp_chunk_path = tempfile.mkstemp(suffix=".wav")
                 os.close(fd)
 
                 try:
-                    await asyncio.to_thread(sf.write, tmp_chunk_path, chunk_np, 16000)
+                    await asyncio.to_thread(sf.write, tmp_chunk_path, chunk_np, 24000)
 
                     clip = None
                     if self.client:
@@ -229,13 +267,22 @@ class AudioExtractor:
                                     emotion=data.get("emotion", "unknown"),
                                     clarity_score=clarity,
                                     duration=duration,
+                                    similarity_score=similarity,
                                 )
                             else:
                                 stats["rejected_quality"] += 1
 
                         except Exception as e:
                             print(f"Gemini error on chunk {i}:", e)
-                            # Fallback if Gemini fails
+                            # Fallback: Whisper-Transkription
+                            transcript = ""
+                            if self.whisper_model is None:
+                                await asyncio.to_thread(self._load_whisper, status_cb)
+                            if self.whisper_model is not None:
+                                transcript = await asyncio.to_thread(
+                                    self._transcribe_clip, tmp_chunk_path
+                                )
+
                             out_name = f"extracted_clip_{start}.wav"
                             out_path = self.output_dir / out_name
                             await asyncio.to_thread(
@@ -243,29 +290,39 @@ class AudioExtractor:
                             )
                             clip = ExtractedClip(
                                 path=str(out_path),
-                                transcript="",
+                                transcript=transcript,
                                 emotion="unclassified_api_error",
                                 clarity_score=0,
                                 duration=duration,
+                                similarity_score=similarity,
                             )
 
                     if not self.client:
+                        # Kein Gemini: Whisper-Transkription
+                        status_cb(
+                            f"Whisper transcription for chunk {i + 1}/{len(speech_timestamps)}..."
+                        )
+                        transcript = await asyncio.to_thread(
+                            self._transcribe_clip, tmp_chunk_path
+                        )
+
                         out_name = f"extracted_clip_{start}.wav"
                         out_path = self.output_dir / out_name
                         await asyncio.to_thread(shutil.copy, tmp_chunk_path, out_path)
                         clip = ExtractedClip(
                             path=str(out_path),
-                            transcript="",
+                            transcript=transcript,
                             emotion="unclassified",
                             clarity_score=0,
                             duration=duration,
+                            similarity_score=similarity,
                         )
 
                     stats["processed"] += 1
                     if clip:
                         stats["found"] += 1
                         status_cb(
-                            f"Found new clip: {clip.emotion} (Score: {clip.clarity_score})"
+                            f"Found new clip: {clip.emotion} (Score: {clip.clarity_score}, Sim: {similarity:.2f})"
                         )
                         yield clip
                     stats_cb(stats)
@@ -275,8 +332,10 @@ class AudioExtractor:
                         os.remove(tmp_chunk_path)
 
         finally:
-            if tmp_wav.exists():
-                tmp_wav.unlink()
+            if tmp_wav_16k.exists():
+                tmp_wav_16k.unlink()
+            if tmp_wav_24k.exists():
+                tmp_wav_24k.unlink()
             status_cb(
                 "Extraction finished."
                 if not self.is_cancelled

@@ -9,7 +9,7 @@
 # you can use Python 3.12 as a stable alternative.
 
 # ── TTS backend ──────────────────────────────────────────────────────────────
-qwen-tts>=0.1.1
+-e ./third_party/Qwen3-TTS
 
 # ── PyTorch (Apple-MPS build – pre-installed via pip or conda) ──────────────
 # If not already installed:
@@ -22,6 +22,11 @@ soundfile>=0.13.0
 numpy>=1.26.0,<2.0.0   # keep <2 for MPS stability (confirmed working)
 scipy>=1.15.0
 torchcodec>=0.10.0
+librosa>=0.10.0
+
+# ── Model & Training ────────────────────────────────────────────────────────
+safetensors>=0.4.0
+huggingface_hub>=0.20.0
 
 # ── GUI ───────────────────────────────────────────────────────────────────────
 flet>=0.28.0
