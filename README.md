@@ -87,8 +87,7 @@ voice-clone/
 ├── core/
 │   ├── engine.py         # TTS Engine (MPS/CUDA Optimized)
 │   ├── profiles.py       # Voice Profile CRUD & Storage
-│   ├── extractor.py      # AI-Powered Audio Mining Pipeline
-│   └── extractor.py      # Speaker Identification & VAD
+│   └── extractor.py      # AI-Powered Audio Mining Pipeline & VAD
 ├── ui/
 │   └── flet_app.py       # Modern, scrollable Flet UI
 └── voices/               # Local database (Profiles, Settings, Exports)

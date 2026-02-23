@@ -72,7 +72,6 @@ checkpoints/
 *.swo
 *~
 .cursor/
-.claude/
 .agent/
 
 # ── Environment / secrets ─────────────────────────────────────────────────────

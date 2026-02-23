@@ -6,10 +6,10 @@ Verwaltet das Qwen3-TTS-Modell für Inferenz:
   • load_finetuned_model()  → Finetuned CustomVoice-Checkpoint laden
   • generate_custom_voice() → Sprache generieren mit trainierter Stimme
 
-Apple-Silicon / MPS-Hinweise
------------------------------
-• Modell MUSS torch.float32 verwenden (float16 → NaN-Fehler auf MPS).
-• attn_implementation="sdpa" statt "flash_attention_2" (kein CUDA auf Mac).
+Apple-Silicon / MPS-Hinweise (macOS 26 + PyTorch 2.10)
+-------------------------------------------------------
+• torch.bfloat16 ist stabil auf MPS (getestet mit macOS 26 Beta 4).
+• attn_implementation="sdpa" (PyTorch Scaled Dot Product Attention).
 • torch.mps.synchronize() nach jeder Inferenz aufrufen.
 """
 
@@ -115,7 +115,7 @@ class TTSEngine:
             self._model = Qwen3TTSModel.from_pretrained(
                 BASE_MODEL_ID,
                 device_map={"": self._device},
-                dtype=torch.float32,
+                dtype=torch.bfloat16,
                 attn_implementation="sdpa",
             )
             self._current_checkpoint = BASE_MODEL_ID
@@ -146,7 +146,7 @@ class TTSEngine:
             self._model = Qwen3TTSModel.from_pretrained(
                 checkpoint_path,
                 device_map={"": self._device},
-                dtype=torch.float32,
+                dtype=torch.bfloat16,
                 attn_implementation="sdpa",
             )
             self._current_checkpoint = checkpoint_path
