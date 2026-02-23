@@ -136,12 +136,12 @@ class TTSEngine:
             do_sample=True,
             top_k=50,
             top_p=1.0,
-            temperature=temperature,
-            repetition_penalty=repetition_penalty,
+            temperature=1.6, #temperature,
+            repetition_penalty=1.1, #epetition_penalty,
             subtalker_dosample=True,
             subtalker_top_k=50,
             subtalker_top_p=1.0,
-            subtalker_temperature=subtalker_temperature,
+            subtalker_temperature=1.6, #subtalker_temperature,
         )
         self._sync_device()
         return wavs, sr
@@ -190,12 +190,12 @@ class TTSEngine:
             do_sample=True,
             top_k=50,
             top_p=1.0,
-            temperature=temperature,
-            repetition_penalty=repetition_penalty,
+            temperature=1.6, #temperature,
+            repetition_penalty=1.1, #repetition_penalty,
             subtalker_dosample=True,
             subtalker_top_k=50,
             subtalker_top_p=1.0,
-            subtalker_temperature=subtalker_temperature,
+            subtalker_temperature=1.6, #subtalker_temperature,
         )
         self._sync_device()
         return wavs, sr
