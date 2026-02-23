@@ -20,9 +20,7 @@ install-uv:
 # Create virtual environment and install dependencies using uv
 create-env:
     @echo "Creating virtual environment with Python 3.14 (managed by uv)..."
-    @uv venv --python 3.14
-    @echo "Installing dependencies via uv (lightning fast)..."
-    @uv pip install -r requirements.txt
+    @uv sync --python 3.14
     @echo "Environment ready."
 
 # Run the application

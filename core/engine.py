@@ -4,10 +4,10 @@ core/engine.py – TTS-Engine (Singleton)
 Verwaltet das Qwen3-TTS-Voice-Clone-Modell:
   • Qwen3-TTS-12Hz-1.7B-Base → Voice-Cloning via Referenz-Audio
 
-Apple-Silicon / MPS-Hinweise
------------------------------
-• Modell MUSS torch.float32 verwenden (float16 → NaN-Fehler auf MPS).
-• attn_implementation="sdpa" statt "flash_attention_2" (kein CUDA auf Mac).
+Apple-Silicon / MPS-Hinweise (macOS 26 + PyTorch 2.10)
+-------------------------------------------------------
+• torch.bfloat16 ist stabil auf MPS (getestet mit macOS 26 Beta 4).
+• attn_implementation="sdpa" (PyTorch Scaled Dot Product Attention).
 • torch.mps.synchronize() nach jeder Inferenz aufrufen.
 """
 
@@ -100,7 +100,10 @@ class TTSEngine:
             from qwen_tts import Qwen3TTSModel  # type: ignore[import]
 
             self._clone_model = Qwen3TTSModel.from_pretrained(
-                CLONE_MODEL_ID, device_map={"": self._device}, dtype=torch.bfloat16
+                CLONE_MODEL_ID,
+                device_map={"": self._device},
+                dtype=torch.bfloat16,
+                attn_implementation="sdpa",
             )
             if progress_cb:
                 progress_cb("Voice-Clone-Modell bereit.")

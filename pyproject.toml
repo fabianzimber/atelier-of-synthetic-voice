@@ -1,0 +1,45 @@
+[project]
+name = "voice-clone"
+version = "1.0.0"
+description = "Atelier of Synthetic Voice – High-fidelity voice cloning via Qwen3-TTS"
+readme = "README.md"
+requires-python = ">=3.12"
+
+dependencies = [
+    # ── TTS backend (local) ──────────────────────────────────────────────
+    "qwen-tts",
+
+    # ── PyTorch ──────────────────────────────────────────────────────────
+    "torch>=2.10.0",
+    "torchaudio>=2.10.0",
+
+    # ── Audio I/O & processing ───────────────────────────────────────────
+    "soundfile>=0.13.1",
+    "numpy>=1.26.4,<2.0.0",
+    "scipy>=1.17.1",
+    "torchcodec>=0.10.0",
+
+    # ── GUI ──────────────────────────────────────────────────────────────
+    "flet>=0.80.5",
+    "flet-desktop>=0.80.5",
+
+    # ── Transcription ────────────────────────────────────────────────────
+    "openai-whisper>=20250625",
+
+    # ── Data Miner ───────────────────────────────────────────────────────
+    "speechbrain>=1.0.3",
+    "google-genai>=1.64.0",
+
+    # ── macOS Dock icon ──────────────────────────────────────────────────
+    "pyobjc-framework-Cocoa>=11.0; sys_platform == 'darwin'",
+]
+
+[tool.uv.sources]
+qwen-tts = { path = "third_party/Qwen3-TTS", editable = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["core", "ui"]

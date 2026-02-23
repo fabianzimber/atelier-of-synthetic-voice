@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncGenerator, Callable, Optional
@@ -20,6 +21,14 @@ try:
     torchaudio.set_audio_backend("soundfile")
 except Exception:
     pass
+
+# Suppress speechbrain's use of deprecated torch.cuda.amp.custom_fwd (fixed in PyTorch 2.x)
+warnings.filterwarnings(
+    "ignore",
+    message=".*torch\\.cuda\\.amp\\.custom_fwd.*",
+    category=FutureWarning,
+    module="speechbrain",
+)
 
 from google import genai
 from google.genai import types
@@ -282,3 +291,25 @@ class AudioExtractor:
                 if not self.is_cancelled
                 else "Extraction cancelled."
             )
+
+    @staticmethod
+    def filter_top_per_emotion(
+        clips: list[ExtractedClip], max_per_emotion: int = 3
+    ) -> list[ExtractedClip]:
+        """Keep only the top N clips per emotion (by clarity_score), delete the rest from disk."""
+        from collections import defaultdict
+
+        by_emotion: dict[str, list[ExtractedClip]] = defaultdict(list)
+        for clip in clips:
+            by_emotion[clip.emotion].append(clip)
+
+        keep: list[ExtractedClip] = []
+        for emotion, group in by_emotion.items():
+            group.sort(key=lambda c: c.clarity_score, reverse=True)
+            for clip in group[max_per_emotion:]:
+                p = Path(clip.path)
+                if p.exists():
+                    p.unlink()
+            keep.extend(group[:max_per_emotion])
+
+        return keep

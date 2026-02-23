@@ -508,6 +508,7 @@ class VoiceCloneStudioApp:
         self.miner_target_path: Optional[str] = None
         self.miner_source_path: Optional[str] = None
         self.active_miner: Optional[AudioExtractor] = None
+        self.miner_extracted_clips: list = []
 
         return self._panel(
             "Audio Extractor",
@@ -612,6 +613,7 @@ class VoiceCloneStudioApp:
         self.miner_progress.visible = True
         self.miner_status_label.value = "Initializing Extractor..."
         self.miner_results_list.controls.clear()
+        self.miner_extracted_clips.clear()
         self.page.update()
 
         output_dir = Path(__file__).resolve().parent.parent / "extracted_clips"
@@ -633,58 +635,76 @@ class VoiceCloneStudioApp:
 
         try:
             async for clip in self.active_miner.extract(status_cb, stats_cb):
-                row = ft.Container(
-                    padding=10,
-                    border_radius=10,
-                    bgcolor="#F8FAFE",
-                    border=ft.border.all(1, "#DDE5F0"),
-                    content=ft.Row(
-                        [
-                            ft.IconButton(
-                                ft.Icons.PLAY_CIRCLE_FILL,
-                                icon_color="#0A84FF",
-                                on_click=lambda e, p=clip.path: asyncio.create_task(
-                                    self._play_mined_clip(p)
-                                ),
-                            ),
-                            ft.Column(
-                                [
-                                    ft.Text(
-                                        f"Emotion: {clip.emotion} (Score: {clip.clarity_score}/10)",
-                                        weight=ft.FontWeight.W_600,
-                                        size=12,
-                                    ),
-                                    ft.Text(
-                                        f'"{clip.transcript}"',
-                                        size=11,
-                                        italic=True,
-                                        max_lines=1,
-                                    ),
-                                ],
-                                expand=True,
-                            ),
-                            ft.ElevatedButton(
-                                "Use in Lab",
-                                on_click=lambda e, c=clip: asyncio.create_task(
-                                    self._import_mined_clip(c)
-                                ),
-                            ),
-                        ]
-                    ),
+                self.miner_extracted_clips.append(clip)
+                self.miner_results_list.controls.append(
+                    self._build_clip_row(clip)
                 )
-                self.miner_results_list.controls.append(row)
                 self.page.update()
         except Exception as e:
             self._toast(f"Extraction error: {e}", error=True)
         finally:
-            self.miner_progress.visible = False
-            self.miner_status_label.value = (
-                "Extraction Complete."
-                if not self.active_miner.is_cancelled
-                else "Cancelled."
+            # Post-filter: keep top 3 per emotion, delete the rest from disk
+            before = len(self.miner_extracted_clips)
+            self.miner_extracted_clips = AudioExtractor.filter_top_per_emotion(
+                self.miner_extracted_clips, max_per_emotion=3
             )
+            removed = before - len(self.miner_extracted_clips)
+            if removed > 0:
+                self.miner_results_list.controls.clear()
+                for clip in self.miner_extracted_clips:
+                    self.miner_results_list.controls.append(
+                        self._build_clip_row(clip)
+                    )
+
+            self.miner_progress.visible = False
+            cancelled = self.active_miner and self.active_miner.is_cancelled
+            msg = "Cancelled." if cancelled else "Extraction Complete."
+            if removed > 0:
+                msg += f" Filtered: kept top 3/emotion, removed {removed} clips."
+            self.miner_status_label.value = msg
             self.active_miner = None
             self.page.update()
+
+    def _build_clip_row(self, clip) -> ft.Container:
+        return ft.Container(
+            padding=10,
+            border_radius=10,
+            bgcolor="#F8FAFE",
+            border=ft.border.all(1, "#DDE5F0"),
+            content=ft.Row(
+                [
+                    ft.IconButton(
+                        ft.Icons.PLAY_CIRCLE_FILL,
+                        icon_color="#0A84FF",
+                        on_click=lambda e, p=clip.path: asyncio.create_task(
+                            self._play_mined_clip(p)
+                        ),
+                    ),
+                    ft.Column(
+                        [
+                            ft.Text(
+                                f"Emotion: {clip.emotion} (Score: {clip.clarity_score}/10)",
+                                weight=ft.FontWeight.W_600,
+                                size=12,
+                            ),
+                            ft.Text(
+                                f'"{clip.transcript}"',
+                                size=11,
+                                italic=True,
+                                max_lines=1,
+                            ),
+                        ],
+                        expand=True,
+                    ),
+                    ft.ElevatedButton(
+                        "Use in Lab",
+                        on_click=lambda e, c=clip: asyncio.create_task(
+                            self._import_mined_clip(c)
+                        ),
+                    ),
+                ]
+            ),
+        )
 
     async def _play_mined_clip(self, path: str) -> None:
         self._stop_playback_process()
@@ -1240,5 +1260,31 @@ def _main(page: ft.Page) -> None:
     VoiceCloneStudioApp(page)
 
 
+def _apply_macos_identity() -> None:
+    """Set Dock icon and process name after Flet's engine finishes initializing."""
+    import sys
+    if sys.platform != "darwin":
+        return
+    import threading
+    import time
+
+    icon_path = str(Path(__file__).resolve().parent.parent / "assets" / "logo.png")
+
+    def _set():
+        # Flet's Flutter engine needs ~1 s to finish setting its own icon/name
+        time.sleep(1.2)
+        try:
+            from AppKit import NSApp, NSImage, NSProcessInfo  # type: ignore[import]
+            NSProcessInfo.processInfo().setProcessName_(APP_TITLE)
+            image = NSImage.alloc().initWithContentsOfFile_(icon_path)
+            if image:
+                NSApp.setApplicationIconImage_(image)
+        except Exception:
+            pass
+
+    threading.Thread(target=_set, daemon=True).start()
+
+
 def run() -> None:
+    _apply_macos_identity()
     ft.app(target=_main, view=ft.AppView.FLET_APP, assets_dir="assets")
