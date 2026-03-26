@@ -1318,7 +1318,7 @@ class VoiceCloneStudioApp:
             self.settings.temperature = float(self.temp_slider.value)
             self.settings.repetition_penalty = float(self.rep_penalty_slider.value)
             self.settings.subtalker_temperature = float(self.sub_temp_slider.value)
-            self.settings.max_token_size = int(self.max_tokens_input.value or 2048)
+            self.settings.max_token_size = int(self.max_tokens_input.value)
             _save_settings(self.settings)
         except ValueError:
             pass
