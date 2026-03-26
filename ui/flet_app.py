@@ -1156,6 +1156,10 @@ class VoiceCloneStudioApp:
     def _stop_playback_process(self) -> None:
         if self.playback_process:
             self.playback_process.terminate()
+            try:
+                self.playback_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.playback_process.kill()
         self.playback_process = None
 
     def _open_output(self, _: ft.ControlEvent) -> None:
@@ -1172,7 +1176,7 @@ class VoiceCloneStudioApp:
                 subprocess.Popen(["explorer", "/select,", str(path)])
             else:
                 subprocess.Popen(["xdg-open", str(path.parent)])
-        except:
+        except (FileNotFoundError, OSError, subprocess.SubprocessError):
             pass
 
     def _save_preview(self, _: ft.ControlEvent) -> None:
@@ -1314,7 +1318,7 @@ class VoiceCloneStudioApp:
             self.settings.temperature = float(self.temp_slider.value)
             self.settings.repetition_penalty = float(self.rep_penalty_slider.value)
             self.settings.subtalker_temperature = float(self.sub_temp_slider.value)
-            self.settings.max_token_size = int(self.max_tokens_input.value or 4092)
+            self.settings.max_token_size = int(self.max_tokens_input.value)
             _save_settings(self.settings)
         except ValueError:
             pass
