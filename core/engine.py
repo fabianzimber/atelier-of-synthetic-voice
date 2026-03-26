@@ -110,7 +110,7 @@ class TTSEngine:
             st = self._clone_model.model.speech_tokenizer
             if st is not None and str(st.device) != self._device:
                 if progress_cb:
-                    progress_cb("Verschiebe Speech-Tokenizer auf MPS…")
+                    progress_cb(f"Verschiebe Speech-Tokenizer auf {self._device.upper()}…")
                 st.model = st.model.to(self._device)
                 st.device = torch.device(self._device)
 

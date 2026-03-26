@@ -6,12 +6,14 @@ import subprocess
 import tempfile
 import warnings
 from dataclasses import dataclass
+from math import gcd
 from pathlib import Path
 from typing import AsyncGenerator, Callable, Optional
 
 import numpy as np
 import soundfile as sf
 import torch
+from scipy.signal import resample_poly
 import torchaudio
 
 # Monkey patch torchaudio.list_audio_backends for newer torchaudio versions used by speechbrain
@@ -382,8 +384,8 @@ class AudioExtractor:
             if audio.ndim > 1:
                 audio = audio.mean(axis=1)
             if clip_sr != sr:
-                import resampy
-                audio = resampy.resample(audio, clip_sr, sr)
+                g = gcd(sr, clip_sr)
+                audio = resample_poly(audio, sr // g, clip_sr // g).astype(np.float32)
             segments.append(audio)
             segments.append(silence)
 
